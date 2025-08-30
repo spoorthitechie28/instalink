@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InstaLink - Get a Permanent Link for Your File</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .upload-box {
+            transition: background-color 0.2s ease-in-out;
+        }
+        .upload-box.dragover {
+            background-color: #dbeafe;
+            border-color: #3b82f6;
+        }
+        /* Spinner Animation */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen">
+
+    <div class="w-full max-w-lg mx-auto p-4">
+        <div class="bg-white rounded-xl shadow-lg p-8">
+            <h1 class="text-2xl font-bold text-center text-gray-800 mb-2">InstaLink</h1>
+            <p class="text-center text-gray-500 mb-6">Upload your resume or any file to get a permanent, shareable link.</p>
+
+            <!-- Upload Form -->
+            <form id="uploadForm" class="space-y-6">
+                <div id="upload-box" class="upload-box border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                    <p class="mt-2 text-sm text-gray-600">
+                        <span class="font-semibold text-blue-600">Click to upload</span> or drag and drop
+                    </p>
+                    <p id="file-name" class="mt-1 text-xs text-gray-500"></p>
+                    <input type="file" name="file" id="fileInput" class="hidden">
+                </div>
+
+                <!-- Custom Link Input -->
+                <div>
+                    <label for="customNameInput" class="block text-sm font-medium text-gray-700 text-left">Custom Link Name (optional)</label>
+                    <div class="mt-1">
+                        <input type="text" name="customName" id="customNameInput" class="block w-full border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm p-3" placeholder="e.g., my-awesome-resume">
+                    </div>
+                </div>
+
+                <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200">
+                    Generate Link
+                </button>
+            </form>
+
+            <!-- Result Display -->
+            <div id="result-container" class="mt-6 text-center hidden">
+                 <div id="loader" class="loader hidden"></div>
+                 <div id="link-display" class="hidden">
+                    <p class="font-medium text-green-600 mb-2">Your link is ready!</p>
+                    <div class="flex items-center border border-gray-300 rounded-lg p-2 bg-gray-50">
+                        <input id="generatedLink" type="text" class="flex-grow bg-transparent border-none focus:ring-0 text-sm text-gray-700" readonly>
+                        <button id="copyButton" class="ml-2 bg-gray-200 text-gray-700 font-semibold py-1 px-3 rounded-md hover:bg-gray-300 text-sm">Copy</button>
+                    </div>
+                    <p id="copy-feedback" class="text-xs text-gray-500 mt-2 h-4"></p>
+                 </div>
+                 <div id="error-display" class="hidden">
+                    <p class="text-red-500 font-medium"></p>
+                 </div>
+            </div>
+        </div>
+        <p class="text-center text-xs text-gray-400 mt-4">A simple tool for a simple need.</p>
+    </div>
+
+    <script>
+        const uploadBox = document.getElementById('upload-box');
+        const fileInput = document.getElementById('fileInput');
+        const fileNameDisplay = document.getElementById('file-name');
+        const uploadForm = document.getElementById('uploadForm');
+        const customNameInput = document.getElementById('customNameInput');
+        const resultContainer = document.getElementById('result-container');
+        const loader = document.getElementById('loader');
+        const linkDisplay = document.getElementById('link-display');
+        const errorDisplay = document.getElementById('error-display');
+        const generatedLinkInput = document.getElementById('generatedLink');
+        const copyButton = document.getElementById('copyButton');
+        const copyFeedback = document.getElementById('copy-feedback');
+
+        uploadBox.addEventListener('click', () => fileInput.click());
+        uploadBox.addEventListener('dragover', (e) => { e.preventDefault(); uploadBox.classList.add('dragover'); });
+        uploadBox.addEventListener('dragleave', () => uploadBox.classList.remove('dragover'));
+        uploadBox.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadBox.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                fileInput.files = e.dataTransfer.files;
+                updateFileName();
+            }
+        });
+        
+        fileInput.addEventListener('change', updateFileName);
+
+        function updateFileName() {
+            fileNameDisplay.textContent = fileInput.files.length > 0 ? fileInput.files[0].name : '';
+        }
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            resultContainer.classList.remove('hidden');
+            loader.classList.add('hidden');
+            linkDisplay.classList.add('hidden');
+            errorDisplay.classList.add('hidden');
+            copyFeedback.textContent = '';
+            
+            if (fileInput.files.length === 0) {
+                errorDisplay.querySelector('p').textContent = 'Please select a file first!';
+                errorDisplay.classList.remove('hidden');
+                return;
+            }
+
+            loader.classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            const customName = customNameInput.value.trim();
+            if (customName) {
+                formData.append('customName', customName);
+            }
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const result = await response.json();
+                loader.classList.add('hidden');
+
+                if (response.ok) {
+                    generatedLinkInput.value = result.link;
+                    linkDisplay.classList.remove('hidden');
+                } else {
+                    errorDisplay.querySelector('p').textContent = `Error: ${result.error || 'Upload failed'}`;
+                    errorDisplay.classList.remove('hidden');
+                }
+            } catch (error) {
+                loader.classList.add('hidden');
+                errorDisplay.querySelector('p').textContent = 'An unexpected error occurred. Please try again.';
+                errorDisplay.classList.remove('hidden');
+            }
+        });
+
+        copyButton.addEventListener('click', () => {
+            generatedLinkInput.select();
+            document.execCommand('copy');
+            copyFeedback.textContent = 'Copied to clipboard!';
+            setTimeout(() => { copyFeedback.textContent = ''; }, 2000);
+        });
+    </script>
+</body>
+</html>
+
