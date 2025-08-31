@@ -6,7 +6,7 @@ const { nanoid } = require('nanoid');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const axios = require('axios'); // Import axios
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -98,56 +98,57 @@ app.post('/upload', upload.any(), async (req, res) => {
     }
 });
 
-// The VIEW/DOWNLOAD route - **PROPERLY FIXED & MORE ROBUST**
+// The VIEW/DOWNLOAD route
 app.get('/file/:shortId', async (req, res) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
         if (!file) {
             return res.status(404).send('<h1>File not found</h1><p>The link may be incorrect or the file has been removed.</p>');
         }
-
-        // Use axios to get the file from Cloudinary as a stream, with a timeout
         const response = await axios({
             method: 'GET',
             url: file.fileUrl,
             responseType: 'stream',
-            timeout: 15000 // 15-second timeout
+            timeout: 15000
         });
-
-        // Set the correct headers to tell the browser how to handle the file.
         res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
         res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
-
-        // Pipe the file stream from Cloudinary directly to the user's browser
         response.data.pipe(res);
-
-        // Add error handling for the stream itself in case it fails mid-transfer
         response.data.on('error', (streamError) => {
             console.error('Error during file stream from Cloudinary:', streamError);
             if (!res.headersSent) {
                 res.status(500).send('<h1>Error during file stream</h1>');
             }
         });
-
     } catch (error) {
         console.error('Error proxying file:', error);
-
-        // Handle specific network errors like timeouts
         if (error.code === 'ECONNABORTED') {
             return res.status(504).send('<h1>Gateway Timeout</h1><p>The server took too long to retrieve the file from storage.</p>');
         }
-        
-        // Handle cases where the file is not found on Cloudinary's end
         if (error.response && error.response.status === 404) {
              return res.status(404).send('<h1>File not found on storage</h1><p>The file may have been deleted.</p>');
         }
-
-        // For all other errors, send a generic server error message
         res.status(500).send('<h1>Server error while retrieving file</h1>');
     }
 });
 
-// --- 7. START THE SERVER ---
+// --- 7. GLOBAL ERROR HANDLER ---
+// This middleware will catch any errors that occur in the middlewares above (like multer)
+app.use((err, req, res, next) => {
+    console.error("An unhandled error occurred:", err.message);
+
+    // Check for specific Cloudinary authentication errors from multer-storage-cloudinary
+    if (err.message && err.message.includes('Invalid Signature')) {
+        return res.status(401).json({ error: 'Cloudinary authentication failed. Please check your API Secret.' });
+    }
+    if (err.message && err.message.includes('Invalid API key')) {
+        return res.status(401).json({ error: 'Cloudinary authentication failed. Please check your API Key.' });
+    }
+
+    res.status(500).json({ error: 'An unexpected server error occurred. Check the server logs for details.' });
+});
+
+// --- 8. START THE SERVER ---
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
