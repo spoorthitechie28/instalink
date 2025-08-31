@@ -46,12 +46,9 @@ const File = mongoose.model('File', fileSchema);
 // --- 5. MULTER SETUP ---
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
-    params: (req, file) => {
-        // Use 'auto' to let Cloudinary detect the best resource type
-        return {
-            folder: 'instalink_uploads',
-            resource_type: 'auto',
-        };
+    params: {
+        folder: 'instalink_uploads',
+        resource_type: 'auto',
     },
 });
 const upload = multer({ storage: storage });
@@ -81,16 +78,9 @@ app.post('/upload', upload.any(), async (req, res, next) => {
             shortId = nanoid(8);
         }
         
-        // **DEFINITIVE FIX:** Determine the resource type from the URL Cloudinary returns.
+        // **DEFINITIVE FIX:** Use the resource_type provided directly by Cloudinary's response.
         // This is 100% reliable and prevents file corruption.
-        let resourceType;
-        if (file.path.includes('/raw/upload')) {
-            resourceType = 'raw';
-        } else if (file.path.includes('/video/upload')) {
-            resourceType = 'video';
-        } else {
-            resourceType = 'image'; // Default to image if not raw or video
-        }
+        const resourceType = file.resource_type;
 
         const newFile = new File({
             shortId: shortId,
@@ -134,5 +124,4 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
-
 
