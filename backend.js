@@ -12,7 +12,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- 1. CONFIGURE CLOUDINARY ---
-// This section must be correct. Double-check your Render environment variables.
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -33,12 +32,13 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB connected successfully.'))
     .catch(err => console.error('MongoDB connection error:', err));
 
-// --- 4. DATABASE SCHEMA ---
+// --- 4. DATABASE SCHEMA - UPDATED ---
 const fileSchema = new mongoose.Schema({
     shortId: { type: String, required: true, unique: true },
     originalName: String,
     fileUrl: { type: String, required: true },
     cloudinaryId: String,
+    resourceType: { type: String, required: true }, // <-- ADDED THIS FIELD
     createdAt: { type: Date, default: Date.now },
 });
 const File = mongoose.model('File', fileSchema);
@@ -46,9 +46,12 @@ const File = mongoose.model('File', fileSchema);
 // --- 5. MULTER SETUP ---
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
-    params: {
-        folder: 'instalink_uploads',
-        resource_type: 'auto',
+    params: (req, file) => {
+        const resourceType = file.mimetype === 'application/pdf' ? 'raw' : 'auto';
+        return {
+            folder: 'instalink_uploads',
+            resource_type: resourceType,
+        };
     },
 });
 const upload = multer({ storage: storage });
@@ -58,22 +61,16 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'instalink.html'));
 });
 
-// The UPLOAD route
+// The UPLOAD route - UPDATED
 app.post('/upload', upload.any(), async (req, res, next) => {
     try {
         const file = req.files && req.files.length > 0 ? req.files[0] : null;
-        if (!file) {
-            return res.status(400).json({ error: 'No file was uploaded.' });
-        }
-
+        if (!file) { return res.status(400).json({ error: 'No file was uploaded.' }); }
         const { customName } = req.body;
         let shortId;
-
         if (customName) {
             const sanitizedName = customName.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-_]/g, '');
-            if (!sanitizedName) {
-                return res.status(400).json({ error: 'Custom name contains invalid characters.' });
-            }
+            if (!sanitizedName) { return res.status(400).json({ error: 'Custom name contains invalid characters.' });}
             const existingFile = await File.findOne({ shortId: sanitizedName });
             if (existingFile) {
                 await cloudinary.uploader.destroy(file.filename);
@@ -83,61 +80,51 @@ app.post('/upload', upload.any(), async (req, res, next) => {
         } else {
             shortId = nanoid(8);
         }
+        
+        // Correctly determine and save the resource type
+        const resourceType = file.mimetype === 'application/pdf' ? 'raw' : 'image';
 
         const newFile = new File({
             shortId: shortId,
             originalName: file.originalname,
-            fileUrl: file.path, // This is the URL from Cloudinary
+            fileUrl: file.path,
             cloudinaryId: file.filename,
+            resourceType: resourceType, // <-- SAVE THE CORRECT TYPE
         });
-
         await newFile.save();
-
         const shareableLink = `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/file/${newFile.shortId}`;
         res.status(200).json({ link: shareableLink });
     } catch (error) {
-        // Pass any errors to the global error handler
         next(error);
     }
 });
 
-// The VIEW/DOWNLOAD route - **FINAL, SIMPLIFIED FIX**
+// The VIEW/DOWNLOAD route - UPDATED
 app.get('/file/:shortId', async (req, res, next) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
-        if (!file) {
-            return res.status(404).send('<h1>File not found</h1><p>The link may be incorrect or the file has been removed.</p>');
-        }
+        if (!file) { return res.status(404).send('<h1>File not found</h1>'); }
 
-        // Create a new URL that tells Cloudinary to force a download
-        // We do this by inserting /fl_attachment right after /upload
-        const parts = file.fileUrl.split('/upload/');
-        const downloadUrl = `${parts[0]}/upload/fl_attachment/${parts[1]}`;
-
-        // Redirect the user's browser to this special download URL
+        // Use the official Cloudinary SDK with the CORRECT resource type from the database
+        const downloadUrl = cloudinary.url(file.cloudinaryId, {
+            resource_type: file.resourceType, // <-- USE THE SAVED TYPE
+            flags: ['attachment']
+        });
+        
         res.redirect(302, downloadUrl);
-
     } catch (error) {
         next(error);
     }
 });
-
 
 // --- 7. GLOBAL ERROR HANDLER ---
 app.use((err, req, res, next) => {
     console.error("An unhandled error occurred:", err.message);
-    if (err.message && (err.message.includes('Invalid Signature') || err.message.includes('Invalid API key'))) {
-        return res.status(401).json({ error: 'Cloudinary authentication failed. Please verify your API Key and Secret in Render.' });
-    }
-    res.status(500).json({ error: 'An unexpected server error occurred. Please check the server logs.' });
+    res.status(500).json({ error: 'An unexpected server error occurred.' });
 });
 
 // --- 8. START THE SERVER ---
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
-
-
-
-    
 
