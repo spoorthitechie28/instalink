@@ -48,7 +48,10 @@ const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: 'instalink_uploads',
-        allowed_formats: ['jpeg', 'png', 'jpg', 'pdf', 'doc', 'docx', 'txt'],
+        // FIX: Set resource_type to 'auto'. This tells Cloudinary to automatically
+        // detect the file type (e.g., image, video, or raw for files like PDFs)
+        // and handle it correctly. This is the key to fixing the PDF error.
+        resource_type: 'auto',
     },
 });
 const upload = multer({ storage: storage });
