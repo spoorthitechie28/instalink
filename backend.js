@@ -98,7 +98,7 @@ app.post('/upload', upload.any(), async (req, res) => {
     }
 });
 
-// The VIEW/DOWNLOAD route - **PROPERLY FIXED**
+// The VIEW/DOWNLOAD route - **PROPERLY FIXED & MORE ROBUST**
 app.get('/file/:shortId', async (req, res) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
@@ -106,26 +106,43 @@ app.get('/file/:shortId', async (req, res) => {
             return res.status(404).send('<h1>File not found</h1><p>The link may be incorrect or the file has been removed.</p>');
         }
 
-        // Use axios to get the file from Cloudinary as a stream
+        // Use axios to get the file from Cloudinary as a stream, with a timeout
         const response = await axios({
             method: 'GET',
             url: file.fileUrl,
-            responseType: 'stream'
+            responseType: 'stream',
+            timeout: 15000 // 15-second timeout
         });
 
         // Set the correct headers to tell the browser how to handle the file.
-        // This makes it a proper attachment and suggests the original filename.
-        res.setHeader('Content-Type', file.mimeType);
+        res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
         res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
 
         // Pipe the file stream from Cloudinary directly to the user's browser
         response.data.pipe(res);
 
+        // Add error handling for the stream itself in case it fails mid-transfer
+        response.data.on('error', (streamError) => {
+            console.error('Error during file stream from Cloudinary:', streamError);
+            if (!res.headersSent) {
+                res.status(500).send('<h1>Error during file stream</h1>');
+            }
+        });
+
     } catch (error) {
         console.error('Error proxying file:', error);
+
+        // Handle specific network errors like timeouts
+        if (error.code === 'ECONNABORTED') {
+            return res.status(504).send('<h1>Gateway Timeout</h1><p>The server took too long to retrieve the file from storage.</p>');
+        }
+        
+        // Handle cases where the file is not found on Cloudinary's end
         if (error.response && error.response.status === 404) {
              return res.status(404).send('<h1>File not found on storage</h1><p>The file may have been deleted.</p>');
         }
+
+        // For all other errors, send a generic server error message
         res.status(500).send('<h1>Server error while retrieving file</h1>');
     }
 });
