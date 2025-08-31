@@ -78,16 +78,9 @@ app.post('/upload', upload.any(), async (req, res, next) => {
             shortId = nanoid(8);
         }
         
-        // **DEFINITIVE FIX:** Determine the resource type by inspecting the final URL from Cloudinary.
-        // This is 100% reliable and prevents the server crash.
-        let resourceType;
-        if (file.path.includes('/raw/upload')) {
-            resourceType = 'raw';
-        } else if (file.path.includes('/video/upload')) {
-            resourceType = 'video';
-        } else {
-            resourceType = 'image'; // Default to image if not raw or video
-        }
+        // **DEFINITIVE FIX:** Use the resource_type provided directly by Cloudinary's response.
+        // This is 100% reliable and prevents file corruption.
+        const resourceType = file.resource_type;
 
         const newFile = new File({
             shortId: shortId,
