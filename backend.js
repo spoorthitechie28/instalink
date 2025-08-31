@@ -6,6 +6,7 @@ const { nanoid } = require('nanoid');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const axios = require('axios'); // Import axios
 require('dotenv').config();
 
 const app = express();
@@ -32,7 +33,7 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB connected successfully.'))
     .catch(err => console.error('MongoDB connection error:', err));
 
-// --- 4. DATABASE SCHEMA (Updated to store URL) ---
+// --- 4. DATABASE SCHEMA ---
 const fileSchema = new mongoose.Schema({
     shortId: { type: String, required: true, unique: true },
     originalName: String,
@@ -43,14 +44,11 @@ const fileSchema = new mongoose.Schema({
 });
 const File = mongoose.model('File', fileSchema);
 
-// --- 5. MULTER SETUP (To upload to Cloudinary) ---
+// --- 5. MULTER SETUP ---
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: 'instalink_uploads',
-        // FIX: Set resource_type to 'auto'. This tells Cloudinary to automatically
-        // detect the file type (e.g., image, video, or raw for files like PDFs)
-        // and handle it correctly. This is the key to fixing the PDF error.
         resource_type: 'auto',
     },
 });
@@ -62,21 +60,14 @@ app.get('/', (req, res) => {
 });
 
 // The UPLOAD route
-// CORRECTED: Switched from upload.single('file') to upload.any()
-// This is more robust and ensures both the file and text fields are parsed correctly.
 app.post('/upload', upload.any(), async (req, res) => {
-    // The file will be in the `req.files` array
     const file = req.files && req.files.length > 0 ? req.files[0] : null;
-
     if (!file) {
         return res.status(400).json({ error: 'No file was uploaded.' });
     }
-
     try {
-        // The customName from the form will now be correctly available in req.body
         const { customName } = req.body;
         let shortId;
-
         if (customName) {
             const sanitizedName = customName.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-_]/g, '');
             if (!sanitizedName) {
@@ -84,7 +75,6 @@ app.post('/upload', upload.any(), async (req, res) => {
             }
             const existingFile = await File.findOne({ shortId: sanitizedName });
             if (existingFile) {
-                // Important: Delete the file just uploaded to Cloudinary since the name is taken
                 await cloudinary.uploader.destroy(file.filename);
                 return res.status(409).json({ error: 'This custom link name is already taken.' });
             }
@@ -92,37 +82,51 @@ app.post('/upload', upload.any(), async (req, res) => {
         } else {
             shortId = nanoid(8);
         }
-
         const newFile = new File({
             shortId: shortId,
             originalName: file.originalname,
-            fileUrl: file.path, // multer-storage-cloudinary provides the URL in `req.file.path`
+            fileUrl: file.path,
             mimeType: file.mimetype,
             cloudinaryId: file.filename,
         });
-
         await newFile.save();
-
         const shareableLink = `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/file/${newFile.shortId}`;
         res.status(200).json({ link: shareableLink });
-
     } catch (error) {
         console.error('Error during upload:', error);
         res.status(500).json({ error: 'Server error while creating link.' });
     }
 });
 
-// The VIEW/DOWNLOAD route
+// The VIEW/DOWNLOAD route - **PROPERLY FIXED**
 app.get('/file/:shortId', async (req, res) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
         if (!file) {
             return res.status(404).send('<h1>File not found</h1><p>The link may be incorrect or the file has been removed.</p>');
         }
-        res.redirect(file.fileUrl);
+
+        // Use axios to get the file from Cloudinary as a stream
+        const response = await axios({
+            method: 'GET',
+            url: file.fileUrl,
+            responseType: 'stream'
+        });
+
+        // Set the correct headers to tell the browser how to handle the file.
+        // This makes it a proper attachment and suggests the original filename.
+        res.setHeader('Content-Type', file.mimeType);
+        res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
+
+        // Pipe the file stream from Cloudinary directly to the user's browser
+        response.data.pipe(res);
+
     } catch (error) {
-        console.error('Error finding file:', error);
-        res.status(500).send('<h1>Server error</h1>');
+        console.error('Error proxying file:', error);
+        if (error.response && error.response.status === 404) {
+             return res.status(404).send('<h1>File not found on storage</h1><p>The file may have been deleted.</p>');
+        }
+        res.status(500).send('<h1>Server error while retrieving file</h1>');
     }
 });
 
