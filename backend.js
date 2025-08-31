@@ -6,13 +6,13 @@ const { nanoid } = require('nanoid');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- 1. CONFIGURE CLOUDINARY ---
+// This section must be correct. Double-check your Render environment variables.
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -26,7 +26,7 @@ app.use(express.static(path.join(__dirname)));
 // --- 3. DATABASE CONNECTION ---
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) {
-    console.error("FATAL ERROR: MONGO_URI is not defined in the .env file.");
+    console.error("FATAL ERROR: MONGO_URI is not defined.");
     process.exit(1);
 }
 mongoose.connect(MONGO_URI)
@@ -38,7 +38,6 @@ const fileSchema = new mongoose.Schema({
     shortId: { type: String, required: true, unique: true },
     originalName: String,
     fileUrl: { type: String, required: true },
-    mimeType: String,
     cloudinaryId: String,
     createdAt: { type: Date, default: Date.now },
 });
@@ -60,14 +59,16 @@ app.get('/', (req, res) => {
 });
 
 // The UPLOAD route
-app.post('/upload', upload.any(), async (req, res) => {
-    const file = req.files && req.files.length > 0 ? req.files[0] : null;
-    if (!file) {
-        return res.status(400).json({ error: 'No file was uploaded.' });
-    }
+app.post('/upload', upload.any(), async (req, res, next) => {
     try {
+        const file = req.files && req.files.length > 0 ? req.files[0] : null;
+        if (!file) {
+            return res.status(400).json({ error: 'No file was uploaded.' });
+        }
+
         const { customName } = req.body;
         let shortId;
+
         if (customName) {
             const sanitizedName = customName.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-_]/g, '');
             if (!sanitizedName) {
@@ -82,74 +83,61 @@ app.post('/upload', upload.any(), async (req, res) => {
         } else {
             shortId = nanoid(8);
         }
+
         const newFile = new File({
             shortId: shortId,
             originalName: file.originalname,
-            fileUrl: file.path,
-            mimeType: file.mimetype,
+            fileUrl: file.path, // This is the URL from Cloudinary
             cloudinaryId: file.filename,
         });
+
         await newFile.save();
+
         const shareableLink = `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/file/${newFile.shortId}`;
         res.status(200).json({ link: shareableLink });
     } catch (error) {
-        console.error('Error during upload:', error);
-        res.status(500).json({ error: 'Server error while creating link.' });
+        // Pass any errors to the global error handler
+        next(error);
     }
 });
 
-// The VIEW/DOWNLOAD route
-app.get('/file/:shortId', async (req, res) => {
+// The VIEW/DOWNLOAD route - **FINAL, SIMPLIFIED FIX**
+app.get('/file/:shortId', async (req, res, next) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
         if (!file) {
             return res.status(404).send('<h1>File not found</h1><p>The link may be incorrect or the file has been removed.</p>');
         }
-        const response = await axios({
-            method: 'GET',
-            url: file.fileUrl,
-            responseType: 'stream',
-            timeout: 15000
-        });
-        res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
-        response.data.pipe(res);
-        response.data.on('error', (streamError) => {
-            console.error('Error during file stream from Cloudinary:', streamError);
-            if (!res.headersSent) {
-                res.status(500).send('<h1>Error during file stream</h1>');
-            }
-        });
+
+        // Create a new URL that tells Cloudinary to force a download
+        // We do this by inserting /fl_attachment right after /upload
+        const parts = file.fileUrl.split('/upload/');
+        const downloadUrl = `${parts[0]}/upload/fl_attachment/${parts[1]}`;
+
+        // Redirect the user's browser to this special download URL
+        res.redirect(302, downloadUrl);
+
     } catch (error) {
-        console.error('Error proxying file:', error);
-        if (error.code === 'ECONNABORTED') {
-            return res.status(504).send('<h1>Gateway Timeout</h1><p>The server took too long to retrieve the file from storage.</p>');
-        }
-        if (error.response && error.response.status === 404) {
-             return res.status(404).send('<h1>File not found on storage</h1><p>The file may have been deleted.</p>');
-        }
-        res.status(500).send('<h1>Server error while retrieving file</h1>');
+        next(error);
     }
 });
 
+
 // --- 7. GLOBAL ERROR HANDLER ---
-// This middleware will catch any errors that occur in the middlewares above (like multer)
 app.use((err, req, res, next) => {
     console.error("An unhandled error occurred:", err.message);
-
-    // Check for specific Cloudinary authentication errors from multer-storage-cloudinary
-    if (err.message && err.message.includes('Invalid Signature')) {
-        return res.status(401).json({ error: 'Cloudinary authentication failed. Please check your API Secret.' });
+    if (err.message && (err.message.includes('Invalid Signature') || err.message.includes('Invalid API key'))) {
+        return res.status(401).json({ error: 'Cloudinary authentication failed. Please verify your API Key and Secret in Render.' });
     }
-    if (err.message && err.message.includes('Invalid API key')) {
-        return res.status(401).json({ error: 'Cloudinary authentication failed. Please check your API Key.' });
-    }
-
-    res.status(500).json({ error: 'An unexpected server error occurred. Check the server logs for details.' });
+    res.status(500).json({ error: 'An unexpected server error occurred. Please check the server logs.' });
 });
 
 // --- 8. START THE SERVER ---
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
+
+
+
+    
 
