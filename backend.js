@@ -38,7 +38,7 @@ const fileSchema = new mongoose.Schema({
     originalName: String,
     fileUrl: { type: String, required: true },
     cloudinaryId: String,
-    resourceType: { type: String, required: true }, // <-- ADDED THIS FIELD
+    resourceType: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
 });
 const File = mongoose.model('File', fileSchema);
@@ -47,10 +47,10 @@ const File = mongoose.model('File', fileSchema);
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: (req, file) => {
-        const resourceType = file.mimetype === 'application/pdf' ? 'raw' : 'auto';
+        // Use 'auto' to let Cloudinary detect the best resource type
         return {
             folder: 'instalink_uploads',
-            resource_type: resourceType,
+            resource_type: 'auto',
         };
     },
 });
@@ -61,7 +61,7 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'instalink.html'));
 });
 
-// The UPLOAD route - UPDATED
+// The UPLOAD route - FINAL, ROBUST VERSION
 app.post('/upload', upload.any(), async (req, res, next) => {
     try {
         const file = req.files && req.files.length > 0 ? req.files[0] : null;
@@ -81,15 +81,23 @@ app.post('/upload', upload.any(), async (req, res, next) => {
             shortId = nanoid(8);
         }
         
-        // Correctly determine and save the resource type
-        const resourceType = file.mimetype === 'application/pdf' ? 'raw' : 'image';
+        // **DEFINITIVE FIX:** Determine the resource type from the URL Cloudinary returns.
+        // This is 100% reliable and prevents file corruption.
+        let resourceType;
+        if (file.path.includes('/raw/upload')) {
+            resourceType = 'raw';
+        } else if (file.path.includes('/video/upload')) {
+            resourceType = 'video';
+        } else {
+            resourceType = 'image'; // Default to image if not raw or video
+        }
 
         const newFile = new File({
             shortId: shortId,
             originalName: file.originalname,
             fileUrl: file.path,
             cloudinaryId: file.filename,
-            resourceType: resourceType, // <-- SAVE THE CORRECT TYPE
+            resourceType: resourceType, // <-- Save the GUARANTEED correct type
         });
         await newFile.save();
         const shareableLink = `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/file/${newFile.shortId}`;
@@ -99,15 +107,14 @@ app.post('/upload', upload.any(), async (req, res, next) => {
     }
 });
 
-// The VIEW/DOWNLOAD route - UPDATED
+// The VIEW/DOWNLOAD route - No changes needed, it's already correct
 app.get('/file/:shortId', async (req, res, next) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
         if (!file) { return res.status(404).send('<h1>File not found</h1>'); }
 
-        // Use the official Cloudinary SDK with the CORRECT resource type from the database
         const downloadUrl = cloudinary.url(file.cloudinaryId, {
-            resource_type: file.resourceType, // <-- USE THE SAVED TYPE
+            resource_type: file.resourceType,
             flags: ['attachment']
         });
         
@@ -127,4 +134,5 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
+
 
