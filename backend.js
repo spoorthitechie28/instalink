@@ -4,81 +4,65 @@ const mongoose = require('mongoose');
 const path = require('path');
 const { nanoid } = require('nanoid');
 const cors = require('cors');
-require('dotenv').config(); // Loads environment variables from a .env file
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- IMPORTANT SECURITY NOTE ---
-// In a real production app, you should validate file types and sizes
-// to prevent users from uploading malicious files or overloading your server.
+// --- 1. CONFIGURE CLOUDINARY ---
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-// --- 1. MIDDLEWARE ---
-app.use(cors()); // Allows requests from your frontend
-app.use(express.static(path.join(__dirname))); // Serve static files like your HTML
+// --- 2. MIDDLEWARE ---
+app.use(cors());
+app.use(express.static(path.join(__dirname)));
 
-// --- 2. DATABASE CONNECTION ---
-// The connection string is now loaded from the .env file
+// --- 3. DATABASE CONNECTION ---
 const MONGO_URI = process.env.MONGO_URI;
-
 if (!MONGO_URI) {
     console.error("FATAL ERROR: MONGO_URI is not defined in the .env file.");
-    process.exit(1); // Exit the application if the database string is not set
+    process.exit(1);
 }
-
 mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB connected successfully.'))
     .catch(err => console.error('MongoDB connection error:', err));
 
-// --- 3. DATABASE SCHEMA ---
+// --- 4. DATABASE SCHEMA (Updated to store URL) ---
 const fileSchema = new mongoose.Schema({
-    shortId: {
-        type: String,
-        required: true,
-        unique: true,
-    },
+    shortId: { type: String, required: true, unique: true },
     originalName: String,
-    // The physical path where the file is stored on the server's disk
-    filePath: {
-      type: String,
-      required: true
-    }, 
+    fileUrl: { type: String, required: true },
     mimeType: String,
-    createdAt: {
-        type: Date,
-        default: Date.now,
-    },
+    cloudinaryId: String,
+    createdAt: { type: Date, default: Date.now },
 });
-
 const File = mongoose.model('File', fileSchema);
 
-// --- 4. MULTER SETUP (for file storage) ---
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, './uploads'); // Store files in the 'uploads' directory
+// --- 5. MULTER SETUP (To upload to Cloudinary) ---
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'instalink_uploads',
+        allowed_formats: ['jpeg', 'png', 'jpg', 'pdf', 'doc', 'docx', 'txt'],
     },
-    filename: function (req, file, cb) {
-        // Use a unique name to prevent file conflicts
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
-    }
 });
-
 const upload = multer({ storage: storage });
 
-// --- 5. API ROUTES ---
-
-// Route to serve your main HTML page
+// --- 6. API ROUTES ---
 app.get('/', (req, res) => {
-    // We assume instalink.html is in the same directory as this script
     res.sendFile(path.join(__dirname, 'instalink.html'));
 });
 
 // The UPLOAD route
-// FIX: Changed from upload.single('file') to upload.any()
-// This ensures that both the file and any other text fields (like customName) are correctly processed.
+// CORRECTED: Switched from upload.single('file') to upload.any()
+// This is more robust and ensures both the file and text fields are parsed correctly.
 app.post('/upload', upload.any(), async (req, res) => {
-    // The file will now be in the `req.files` array
+    // The file will be in the `req.files` array
     const file = req.files && req.files.length > 0 ? req.files[0] : null;
 
     if (!file) {
@@ -86,44 +70,41 @@ app.post('/upload', upload.any(), async (req, res) => {
     }
 
     try {
-        // The customName will now be correctly parsed into req.body
+        // The customName from the form will now be correctly available in req.body
         const { customName } = req.body;
         let shortId;
 
         if (customName) {
-            // Sanitize customName to be URL-friendly (allow letters, numbers, -, _)
             const sanitizedName = customName.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-_]/g, '');
-
             if (!sanitizedName) {
                 return res.status(400).json({ error: 'Custom name contains invalid characters.' });
             }
-
-            // Check if the custom name already exists in the database
             const existingFile = await File.findOne({ shortId: sanitizedName });
             if (existingFile) {
+                // Important: Delete the file just uploaded to Cloudinary since the name is taken
+                await cloudinary.uploader.destroy(file.filename);
                 return res.status(409).json({ error: 'This custom link name is already taken.' });
             }
             shortId = sanitizedName;
         } else {
-            // If no custom name, generate a random one
             shortId = nanoid(8);
         }
 
         const newFile = new File({
-            shortId: shortId, // Use the determined shortId (custom or random)
+            shortId: shortId,
             originalName: file.originalname,
-            filePath: file.path,
+            fileUrl: file.path, // multer-storage-cloudinary provides the URL in `req.file.path`
             mimeType: file.mimetype,
+            cloudinaryId: file.filename,
         });
 
         await newFile.save();
 
-        const shareableLink = `${req.protocol}://${req.get('host')}/file/${newFile.shortId}`;
-
+        const shareableLink = `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/file/${newFile.shortId}`;
         res.status(200).json({ link: shareableLink });
 
     } catch (error) {
-        console.error('Error saving file to DB:', error);
+        console.error('Error during upload:', error);
         res.status(500).json({ error: 'Server error while creating link.' });
     }
 });
@@ -132,26 +113,18 @@ app.post('/upload', upload.any(), async (req, res) => {
 app.get('/file/:shortId', async (req, res) => {
     try {
         const file = await File.findOne({ shortId: req.params.shortId });
-
         if (!file) {
             return res.status(404).send('<h1>File not found</h1><p>The link may be incorrect or the file has been removed.</p>');
         }
-
-        // Set the content type header so the browser knows how to display the file
-        res.setHeader('Content-Type', file.mimeType);
-
-        // Use res.sendFile to stream the file. This lets the browser view it directly.
-        res.sendFile(path.resolve(file.filePath));
-
+        res.redirect(file.fileUrl);
     } catch (error) {
         console.error('Error finding file:', error);
         res.status(500).send('<h1>Server error</h1>');
     }
 });
 
-// --- 6. START THE SERVER ---
+// --- 7. START THE SERVER ---
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
-    console.log("Make sure the 'uploads' folder exists in this directory.");
+    console.log(`Server is running on port ${PORT}`);
 });
 
